@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import MorseRunnerCore
 
 @MainActor
@@ -6,12 +7,20 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
                                      NSTableViewDataSource, NSTableViewDelegate {
     private static let separationKey = "TwoBSIQ.StereoSeparation"
     private static let overrideKey = "TwoBSIQ.Zone."
+    private static let wpmKey = "TwoBSIQ.Wpm"
+    private static let slowerKey = "TwoBSIQ.MinRxWpm"
+    private static let fasterKey = "TwoBSIQ.MaxRxWpm"
+    private static let rxOffsets = [0, 1, 2, 4, 6, 8, 10]
     private static let utcTime = DateFormatter()
 
     private let defaults: UserDefaults
     private let catalog: TwoBSIQCatalog
     private let ownCall: CallInputTextField
     private let zone = NSPopUpButton()
+    private let wpmField = CallInputTextField(string: "")
+    private let wpmStepper = NSStepper()
+    private let minRxSpeed = NSPopUpButton()
+    private let maxRxSpeed = NSPopUpButton()
     private let separation = NSSlider(value: 1, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let separationValue = NSTextField(labelWithString: "")
     private let runButton = NSButton(title: "Start", target: nil, action: nil)
@@ -34,16 +43,15 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
     private var selected = TwoBSIQBand.a
     private var draftVersions = [0, 0]
     private var log: [TwoBSIQQSO] = []
-    private let wpm: Int
     private let pitch: Int
     private let volume: Float
     var onClose: (() -> Void)?
 
-    init(call: String, wpm: Int, pitch: Int, volume: Float, defaults: UserDefaults = .standard,
+    init(call: String, wpm: Int, pitch: Int, volume: Float, minRxWpm: Int = 0, maxRxWpm: Int = 0,
+         defaults: UserDefaults = .standard,
          catalog: TwoBSIQCatalog = .bundled) {
         self.defaults = defaults
         self.catalog = catalog
-        self.wpm = wpm
         self.pitch = pitch
         self.volume = volume
         ownCall = CallInputTextField(string: TwoBSIQCatalog.normalizedCall(call))
@@ -56,6 +64,11 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         window.delegate = self
         window.contentView = buildContent()
         window.center()
+        let savedWpm = (defaults.object(forKey: Self.wpmKey) as? NSNumber)?.intValue ?? wpm
+        wpmStepper.integerValue = min(120, max(10, savedWpm))
+        wpmField.integerValue = wpmStepper.integerValue
+        selectOffset(on: minRxSpeed, key: Self.slowerKey, fallback: minRxWpm)
+        selectOffset(on: maxRxSpeed, key: Self.fasterKey, fallback: maxRxWpm)
         Self.utcTime.locale = Locale(identifier: "en_US_POSIX")
         Self.utcTime.timeZone = TimeZone(secondsFromGMT: 0)
         Self.utcTime.dateFormat = "HH:mm:ss"
@@ -102,8 +115,16 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
     func controlTextDidChange(_ notification: Notification) {
         if notification.object as? NSTextField === ownCall {
             updateOwnZone()
+        } else if notification.object as? NSTextField === wpmField {
+            if let value = typedWpm { applySpeed(value) }
         } else if let band = band(for: notification.object as? NSTextField) {
             updatePreview(for: band)
+        }
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        if notification.object as? NSTextField === wpmField {
+            speedEdited()
         }
     }
 
@@ -122,7 +143,24 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         zone.setAccessibilityLabel("Your CQ zone")
         runButton.target = self
         runButton.action = #selector(toggleRun)
-        let setup = row([label("My Call"), ownCall, label("CQ Zone"), zone, runButton])
+        let exit = NSButton(title: "Exit 2BSIQ", target: self, action: #selector(exitTraining))
+        let setup = row([label("My Call"), ownCall, label("CQ Zone"), zone, runButton, exit])
+
+        wpmField.delegate = self
+        wpmField.target = self
+        wpmField.action = #selector(speedEdited)
+        wpmField.alignment = .right
+        wpmField.setAccessibilityLabel("CW Speed")
+        wpmField.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        wpmStepper.minValue = 10
+        wpmStepper.maxValue = 120
+        wpmStepper.increment = 1
+        wpmStepper.target = self
+        wpmStepper.action = #selector(speedStepped)
+        configureOffset(minRxSpeed, label: "CW Min Rx Speed", sign: "−")
+        configureOffset(maxRxSpeed, label: "CW Max Rx Speed", sign: "+")
+        let speeds = row([label("CW Speed"), wpmField, wpmStepper, label("wpm"),
+                          label("Rx Min"), minRxSpeed, label("Rx Max"), maxRxSpeed])
 
         separation.target = self
         separation.action = #selector(separationChanged)
@@ -138,7 +176,7 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
             button.tag = index
             return button
         }
-        let shortcutHint = label("\\ Switch VFO   Esc Cancel")
+        let shortcutHint = label("Enter Send & Switch   \\ Switch VFO   Esc Cancel")
         shortcutHint.textColor = .secondaryLabelColor
         let shortcuts = row(buttons + [shortcutHint])
         score.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
@@ -181,8 +219,8 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         notice.textColor = .secondaryLabelColor
-        let top = row([setup, spacer(), audioSettings])
-        let content = column([top, shortcuts, score, inputs, scroll, notice])
+        let radioSettings = row([speeds, spacer(), audioSettings])
+        let content = column([setup, radioSettings, shortcuts, score, inputs, scroll, notice])
         content.spacing = 10
 
         let root = NSView()
@@ -193,11 +231,61 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
             content.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
-            top.widthAnchor.constraint(equalTo: content.widthAnchor),
+            radioSettings.widthAnchor.constraint(equalTo: content.widthAnchor),
             inputs.widthAnchor.constraint(equalTo: content.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: content.widthAnchor)
         ])
         return root
+    }
+
+    private func configureOffset(_ popup: NSPopUpButton, label: String, sign: String) {
+        for offset in Self.rxOffsets {
+            popup.addItem(withTitle: offset == 0 ? "0" : "\(sign)\(offset)")
+            popup.lastItem?.tag = offset
+        }
+        popup.setAccessibilityLabel(label)
+        popup.target = self
+        popup.action = #selector(rxSpeedChanged)
+    }
+
+    private func selectOffset(on popup: NSPopUpButton, key: String, fallback: Int) {
+        let value = (defaults.object(forKey: key) as? NSNumber)?.intValue ?? fallback
+        popup.selectItem(withTag: Self.rxOffsets.contains(value) ? value : 0)
+    }
+
+    private var typedWpm: Int? {
+        Int(wpmField.currentEditor()?.string ?? wpmField.stringValue)
+    }
+
+    private func applySpeed(_ value: Int) {
+        let wpm = min(120, max(10, value))
+        let slower = minRxSpeed.selectedTag()
+        let faster = maxRxSpeed.selectedTag()
+        wpmStepper.integerValue = wpm
+        defaults.set(wpm, forKey: Self.wpmKey)
+        defaults.set(slower, forKey: Self.slowerKey)
+        defaults.set(faster, forKey: Self.fasterKey)
+        session?.setSpeed(wpm: wpm, slowerBy: slower, fasterBy: faster)
+    }
+
+    @objc private func speedEdited() {
+        applySpeed(typedWpm ?? wpmStepper.integerValue)
+        if wpmField.stringValue != String(wpmStepper.integerValue) {
+            wpmField.integerValue = wpmStepper.integerValue
+        }
+    }
+
+    @objc private func speedStepped() {
+        wpmField.integerValue = wpmStepper.integerValue
+        applySpeed(wpmStepper.integerValue)
+    }
+
+    @objc private func rxSpeedChanged() {
+        applySpeed(wpmStepper.integerValue)
+    }
+
+    @objc private func exitTraining() {
+        window?.performClose(nil)
     }
 
     private func label(_ text: String) -> NSTextField {
@@ -305,7 +393,9 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
                 notice.stringValue = "CQ WW station data is unavailable."
                 return
             }
+            let wpm = wpmStepper.integerValue
             let newSession = TwoBSIQSession(call: call, zone: operatorZone, wpm: wpm, pitch: pitch, catalog: catalog)
+            newSession.setSpeed(wpm: wpm, slowerBy: minRxSpeed.selectedTag(), fasterBy: maxRxSpeed.selectedTag())
             newSession.separation = separation.floatValue
             session = newSession
             draftVersions = [0, 0]
@@ -340,14 +430,17 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
     }
 
     private var focusedBand: TwoBSIQBand? {
-        band(for: (window?.firstResponder as? NSTextView)?.delegate as? NSTextField)
+        guard let responder = window?.firstResponder else { return nil }
+        if let editor = responder as? NSTextView {
+            return band(for: editor.delegate as? NSTextField)
+        }
+        return TwoBSIQBand.allCases.first { entries[$0.rawValue] === responder }
     }
 
     private func select(_ band: TwoBSIQBand, focus: Bool) {
         selected = band
         if focus {
-            let field = entries[band.rawValue].field
-            window?.makeFirstResponder(field.isHidden ? nil : field)
+            entries[band.rawValue].focus()
         }
         for band in TwoBSIQBand.allCases {
             entries[band.rawValue].selected = session != nil && band == selected
@@ -356,25 +449,40 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
 
     private func installShortcuts() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window else { return event }
+            guard let self, let window = self.window,
+                  (event.window ?? NSApp.keyWindow) === window else { return event }
             return self.handleShortcut(event)
         }
     }
 
     private func handleShortcut(_ event: NSEvent) -> NSEvent? {
         guard let session,
-              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
+              event.modifierFlags.intersection([.command, .control]).isEmpty else { return event }
         let band = focusedBand ?? selected
-        if event.charactersIgnoringModifiers == "\\" {
-            if !event.isARepeat { select(band == .a ? .b : .a, focus: true) }
+        let plainKey = !event.modifierFlags.contains(.option)
+        let backslashKey = event.keyCode == UInt16(kVK_ANSI_Backslash) || event.keyCode == UInt16(kVK_JIS_Yen)
+        if event.characters == "\\" || (plainKey && (backslashKey || event.charactersIgnoringModifiers == "\\")) {
+            if !event.isARepeat {
+                (entries[band.rawValue].field.currentEditor() as? CallInputFieldEditor)?.confirmMarkedInput()
+                select(band == .a ? .b : .a, focus: true)
+                refresh()
+            }
             return nil
         }
+        guard plainKey else { return event }
         let action: TwoBSIQAction?
         switch event.keyCode {
         case 122: action = .cq
         case 120: action = .exchange
         case 99: action = .finish
-        case 36, 76: action = session.suggestedAction(for: band)
+        case 36, 76:
+            guard focusedBand != nil else { return event }
+            if !event.isARepeat {
+                if let action = session.suggestedAction(for: band) { send(action) }
+                select(band == .a ? .b : .a, focus: true)
+                refresh()
+            }
+            return nil
         case 53:
             if !event.isARepeat {
                 session.cancel(selected: band)
@@ -409,8 +517,8 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
             }
             if entry.field.isEnabled != running { entry.field.isEnabled = running }
             entry.selected = running && band == selected
-            if wasHidden && !entry.field.isHidden && entry.selected && focusedBand == nil {
-                window?.makeFirstResponder(entry.field)
+            if wasHidden && !entry.field.isHidden && window?.firstResponder === entry {
+                entry.focus()
             }
             setString(statuses[index], laneStatus(state))
         }

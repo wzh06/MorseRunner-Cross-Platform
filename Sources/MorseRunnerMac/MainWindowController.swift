@@ -1197,7 +1197,8 @@ public final class MainWindowController: NSWindowController, NSTableViewDataSour
 
         let controller = TwoBSIQWindowController(
             call: currentInputText(callField), wpm: Settings.wpm,
-            pitch: Settings.pitch, volume: sim.masterVolume
+            pitch: Settings.pitch, volume: sim.masterVolume,
+            minRxWpm: Settings.minRxWpm, maxRxWpm: Settings.maxRxWpm
         )
         let ordinarySettings = sender.menu?.items.filter { $0 !== sender && !$0.isHidden } ?? []
         controller.onClose = { [weak self] in

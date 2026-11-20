@@ -32,7 +32,10 @@ final class TwoBSIQWindowTests: XCTestCase {
         let training = try XCTUnwrap(NSApp.windows.first { $0.title == "2BSIQ — CQ WW CW" && $0.isVisible })
         XCTAssertFalse(mainWindow.isVisible)
         XCTAssertTrue(activity.isHidden)
-        training.close()
+        let trainingViews = descendants(try XCTUnwrap(training.contentView))
+        let exit = try XCTUnwrap(trainingViews.compactMap { $0 as? NSButton }.first { $0.title == "Exit 2BSIQ" })
+        exit.performClick(nil)
+        XCTAssertFalse(training.isVisible)
         XCTAssertTrue(mainWindow.isVisible)
         XCTAssertFalse(activity.isHidden)
         XCTAssertEqual(sliders.map(\.doubleValue), sliderValues)
@@ -73,12 +76,39 @@ final class TwoBSIQWindowTests: XCTestCase {
         let start = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "Start" })
         start.performClick(nil)
         XCTAssertNotNil(a.field.currentEditor())
+
+        let editor = try XCTUnwrap(a.field.currentEditor() as? CallInputFieldEditor)
+        editor.setMarkedText("z", selectedRange: NSRange(location: 0, length: 1),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(editor.hasMarkedText())
+        // A different keyboard layout or input source may translate the
+        // physical backslash key. The marked call must survive the switch.
+        try key("、", 42, in: window)
+        XCTAssertNotNil(b.field.currentEditor())
+        XCTAssertEqual(a.call, "Z")
+        try key("\\", 44, in: window, modifiers: [.option], ignoring: "/")
+        let resumed = try XCTUnwrap(a.field.currentEditor() as? NSTextView)
+        XCTAssertEqual(resumed.selectedRange(), NSRange(location: 1, length: 0))
+
         try key("\r", 36, in: window)
         XCTAssertTrue(a.field.isHidden)
         XCTAssertTrue(visibleText(in: a).contains("CQ TEST BH5HIE"))
-
-        try key("\\", 42, in: window)
         XCTAssertNotNil(b.field.currentEditor())
+
+        try key("\r", 36, in: window)
+        XCTAssertTrue(a.selected)
+        XCTAssertTrue(window.firstResponder === a)
+        XCTAssertTrue(b.field.isHidden)
+        try key("、", 42, in: window)
+        XCTAssertTrue(b.selected)
+        XCTAssertTrue(window.firstResponder === b)
+        try key("\u{1b}", 53, in: window)
+        XCTAssertNotNil(b.field.currentEditor())
+        XCTAssertEqual(a.call, "Z")
+        try key("\\", 42, in: window)
+        try key("\r", 36, in: window)
+        XCTAssertNotNil(b.field.currentEditor())
+
         try key("x", 7, in: window)
         XCTAssertTrue(visibleText(in: b).contains(" ENN 24"))
         try key("\\", 42, in: window)
@@ -86,6 +116,10 @@ final class TwoBSIQWindowTests: XCTestCase {
         XCTAssertEqual(b.call, "X")
 
         XCTAssertTrue(waitUntil { !a.field.isHidden })
+        XCTAssertTrue(views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Listening for a call" })
+        try key("\r", 36, in: window)
+        XCTAssertNotNil(b.field.currentEditor())
+        try key("\\", 42, in: window)
         XCTAssertTrue(waitUntil {
             views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Send exchange" }
         })
@@ -98,9 +132,8 @@ final class TwoBSIQWindowTests: XCTestCase {
         XCTAssertTrue(views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "CQ Zone 25" })
         try key("\r", 36, in: window)
         XCTAssertTrue(visibleText(in: a).contains("JA1ABC ENN 24"))
-        XCTAssertTrue(waitUntil { visibleText(in: a).contains("A1ABC ENN 24") })
-        try key("\\", 42, in: window)
         XCTAssertNotNil(b.field.currentEditor())
+        XCTAssertTrue(waitUntil { visibleText(in: a).contains("A1ABC ENN 24") })
         XCTAssertEqual(b.call, "X")
         XCTAssertTrue(waitUntil { !a.field.isHidden })
         XCTAssertEqual(a.call, "")
@@ -112,19 +145,26 @@ final class TwoBSIQWindowTests: XCTestCase {
         try key("\\", 42, in: window)
         try key("\r", 36, in: window)
         XCTAssertTrue(visibleText(in: a).contains("TU BH5HIE"))
+        XCTAssertNotNil(b.field.currentEditor())
         let log = try XCTUnwrap(views.compactMap { $0 as? NSTableView }.first)
         XCTAssertTrue(waitUntil { log.numberOfRows == 1 })
         XCTAssertEqual(b.call, "X")
+        let exit = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "Exit 2BSIQ" })
+        exit.performClick(nil)
+        XCTAssertFalse(window.isVisible)
     }
 
-    func testStereoAndManualZoneRestoreInNewWindow() throws {
+    func testStereoSpeedAndManualZoneRestoreInNewWindow() throws {
         _ = NSApplication.shared
         let (name, defaults) = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: name) }
         let catalog = TwoBSIQCatalog(history: "JA1ABC,25,\n")
         let first = TwoBSIQWindowController(call: "W1ZZZ", wpm: 25, pitch: 600,
-                                           volume: 0.2, defaults: defaults, catalog: catalog)
+                                           volume: 0.2, minRxWpm: 1, maxRxWpm: 4,
+                                           defaults: defaults, catalog: catalog)
         let firstWindow = try XCTUnwrap(first.window)
+        first.showWindow(nil)
+        firstWindow.makeKeyAndOrderFront(nil)
         let firstViews = descendants(try XCTUnwrap(firstWindow.contentView))
         let slider = try XCTUnwrap(firstViews.compactMap { $0 as? NSSlider }.first)
         XCTAssertEqual(slider.doubleValue, 1)
@@ -134,6 +174,31 @@ final class TwoBSIQWindowTests: XCTestCase {
         XCTAssertEqual(zone.selectedTag(), 0)
         zone.selectItem(withTag: 5)
         XCTAssertTrue(zone.sendAction(zone.action, to: zone.target))
+
+        let speed = try XCTUnwrap(firstViews.compactMap { $0 as? CallInputTextField }.first {
+            $0.accessibilityLabel() == "CW Speed"
+        })
+        XCTAssertEqual(speed.integerValue, 25)
+        XCTAssertTrue(firstWindow.makeFirstResponder(speed))
+        let speedEditor = try XCTUnwrap(speed.currentEditor() as? NSTextView)
+        speedEditor.selectAll(nil)
+        try key("3", 20, in: firstWindow)
+        try key("4", 21, in: firstWindow)
+        try key("\r", 36, in: firstWindow)
+        XCTAssertEqual(speed.integerValue, 34)
+        let stepper = try XCTUnwrap(firstViews.compactMap { $0 as? NSStepper }.first)
+        XCTAssertEqual(stepper.integerValue, 34)
+        stepper.integerValue = 35
+        XCTAssertTrue(stepper.sendAction(stepper.action, to: stepper.target))
+        XCTAssertEqual(speed.integerValue, 35)
+        let minSpeed = try popup("CW Min Rx Speed", in: firstViews)
+        let maxSpeed = try popup("CW Max Rx Speed", in: firstViews)
+        XCTAssertEqual(minSpeed.selectedTag(), 1)
+        XCTAssertEqual(maxSpeed.selectedTag(), 4)
+        minSpeed.selectItem(withTag: 6)
+        maxSpeed.selectItem(withTag: 8)
+        XCTAssertTrue(minSpeed.sendAction(minSpeed.action, to: minSpeed.target))
+        XCTAssertTrue(maxSpeed.sendAction(maxSpeed.action, to: maxSpeed.target))
         firstWindow.close()
 
         let restored = TwoBSIQWindowController(call: "w1zzz", wpm: 25, pitch: 600,
@@ -143,6 +208,13 @@ final class TwoBSIQWindowTests: XCTestCase {
         let restoredViews = descendants(try XCTUnwrap(restoredWindow.contentView))
         XCTAssertEqual(restoredViews.compactMap { $0 as? NSSlider }.first?.doubleValue, 0.5)
         XCTAssertEqual(restoredViews.compactMap { $0 as? NSPopUpButton }.first?.selectedTag(), 5)
+        XCTAssertEqual(restoredViews.compactMap { $0 as? NSStepper }.first?.integerValue, 35)
+        XCTAssertEqual(try popup("CW Min Rx Speed", in: restoredViews).selectedTag(), 6)
+        XCTAssertEqual(try popup("CW Max Rx Speed", in: restoredViews).selectedTag(), 8)
+    }
+
+    private func popup(_ label: String, in views: [NSView]) throws -> NSPopUpButton {
+        try XCTUnwrap(views.compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == label })
     }
 
     private func makeDefaults() throws -> (String, UserDefaults) {
@@ -169,11 +241,12 @@ final class TwoBSIQWindowTests: XCTestCase {
         return condition()
     }
 
-    private func key(_ characters: String, _ code: UInt16, in window: NSWindow) throws {
+    private func key(_ characters: String, _ code: UInt16, in window: NSWindow,
+                     modifiers: NSEvent.ModifierFlags = [], ignoring: String? = nil) throws {
         let event = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: characters,
-            charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code
+            charactersIgnoringModifiers: ignoring ?? characters, isARepeat: false, keyCode: code
         ))
         NSApp.sendEvent(event)
     }

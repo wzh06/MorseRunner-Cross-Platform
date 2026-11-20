@@ -50,7 +50,9 @@ public struct TwoBSIQStereoBlock {
 public final class TwoBSIQSession {
     private let call: String
     private let zone: Int
-    private let wpm: Int
+    private var wpm: Int
+    private var slowerBy = 0
+    private var fasterBy = 0
     private let pitch: Int
     private let ownLocation: DxccRec?
     private let keyer = Keyer()
@@ -67,6 +69,7 @@ public final class TwoBSIQSession {
     private struct Lane {
         var stage = TwoBSIQStage.idle
         var station: TwoBSIQCatalog.Station?
+        var stationWpm = 25
         var reception: Reception?
         var deadline: Int?
         var status: String?
@@ -131,6 +134,16 @@ public final class TwoBSIQSession {
 
     public static func exchangeSuffix(zone: Int) -> String {
         " ENN \(zone)"
+    }
+
+    public func setSpeed(wpm: Int, slowerBy: Int, fasterBy: Int) {
+        self.wpm = min(120, max(10, wpm))
+        self.slowerBy = min(10, max(0, slowerBy))
+        self.fasterBy = min(10, max(0, fasterBy))
+    }
+
+    var receiveSpeedRange: ClosedRange<Int> {
+        max(10, wpm - slowerBy)...min(120, wpm + fasterBy)
     }
 
     public func display(for band: TwoBSIQBand) -> TwoBSIQLaneDisplay {
@@ -279,12 +292,13 @@ public final class TwoBSIQSession {
             lanes[index].nextCandidate = (next + 1) % candidates.count
         } while lanes[index].worked.contains(station.call)
         lanes[index].station = station
+        lanes[index].stationWpm = Int.random(in: receiveSpeedRange)
         receive(station.call, on: band, stage: .receivingCall)
     }
 
     private func receive(_ text: String, on band: TwoBSIQBand, stage: TwoBSIQStage) {
-        keyer.setWpm(wpm)
         let index = band.rawValue
+        keyer.setWpm(lanes[index].stationWpm)
         lanes[index].stage = stage
         lanes[index].deadline = nil
         lanes[index].reception = Reception(message: TwoBSIQMessage(text, keyer: keyer), start: rendered + replyDelay)

@@ -62,7 +62,7 @@ final class TwoBSIQEntryView: NSView {
 
     func displayTransmission(_ text: String?) {
         if text != nil, field.currentEditor() != nil {
-            window?.makeFirstResponder(nil)
+            window?.makeFirstResponder(self)
         }
         let sending = text != nil
         if field.isHidden != sending {
@@ -84,10 +84,17 @@ final class TwoBSIQEntryView: NSView {
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
-        if !field.isHidden {
-            window?.makeFirstResponder(field)
+    override var acceptsFirstResponder: Bool { true }
+
+    func focus() {
+        window?.makeFirstResponder(field.isHidden ? self : field)
+        if let editor = field.currentEditor() as? NSTextView {
+            editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
         }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        focus()
     }
 
     override func draw(_ dirtyRect: NSRect) {

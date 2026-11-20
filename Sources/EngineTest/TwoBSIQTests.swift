@@ -177,6 +177,40 @@ final class TwoBSIQTests: XCTestCase {
         XCTAssertEqual(stereo.right, b)
     }
 
+    func testSpeedChangesKeepTheCurrentCallersSpeed() async {
+        let session = TwoBSIQSession(call: "BH5HIE", zone: 24, wpm: 60, pitch: 600, stations: [
+            station("JA1ABC", zone: 25, entity: "Japan", continent: "AS")
+        ], replyDelay: 0)
+        let clock = Clock(session)
+        XCTAssertTrue(session.send(.cq, on: .a, enteredCall: ""))
+        clock.until { session.display(for: .a).stage == .receivingCall }
+
+        session.setSpeed(wpm: 32, slowerBy: 4, fasterBy: 6)
+        XCTAssertEqual(session.receiveSpeedRange, 28...38)
+        session.setSpeed(wpm: 10, slowerBy: 10, fasterBy: 2)
+        XCTAssertEqual(session.receiveSpeedRange, 10...12)
+        session.setSpeed(wpm: 120, slowerBy: 2, fasterBy: 10)
+        XCTAssertEqual(session.receiveSpeedRange, 118...120)
+        clock.until { session.suggestedAction(for: .a) == .exchange }
+        XCTAssertTrue(session.send(.exchange, on: .a, enteredCall: "JA1ABC"))
+
+        let keyer = Keyer()
+        keyer.setWpm(120)
+        let outgoing = TwoBSIQMessage("JA1ABC ENN 24", keyer: keyer)
+        clock.advance(by: outgoing.sampleCount - 1)
+        XCTAssertNotNil(session.display(for: .a).transmission)
+        clock.advance(by: 1)
+        XCTAssertEqual(session.display(for: .a).stage, .receivingReport)
+
+        keyer.setWpm(60)
+        let report = TwoBSIQMessage("5NN 25", keyer: keyer)
+        let bufferLead = clock.rendered - clock.played
+        clock.advance(by: bufferLead + report.sampleCount - 1)
+        XCTAssertEqual(session.display(for: .a).stage, .receivingReport)
+        clock.advance(by: 1)
+        XCTAssertEqual(session.display(for: .a).stage, .awaitingTU)
+    }
+
     private func station(_ call: String, zone: Int, entity: String, continent: String) -> TwoBSIQCatalog.Station {
         .init(call: call, zone: zone, entity: entity, continent: continent)
     }
