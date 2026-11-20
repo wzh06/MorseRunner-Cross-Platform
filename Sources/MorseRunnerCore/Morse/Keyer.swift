@@ -49,6 +49,10 @@ class Keyer {
         wpmC = c
     }
 
+    var samplesPerUnit: Int {
+        bankersRound(60.0 / 48.0 * Double(rate) / Double(wpmS))
+    }
+
     /// Load MorseTable with a trailing space (standard inter-char spacing).
     func loadMorseTable() {
         for (ch, code) in MorseTable.entries {
@@ -121,7 +125,7 @@ class Keyer {
         }
 
         // 48U = one word including 5U inter-word space
-        let samplesInUnit = bankersRound(60.0 / 48.0 * Double(rate) / Double(wpmS))
+        let samplesInUnit = samplesPerUnit
         trueEnvelopeLen = unitCnt * samplesInUnit
         let len = bufSize * Int(ceil(Double(trueEnvelopeLen) / Double(bufSize)))
         var result = SampleArray(repeating: 0, count: len)

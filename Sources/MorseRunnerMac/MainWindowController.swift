@@ -188,6 +188,7 @@ public final class MainWindowController: NSWindowController, NSTableViewDataSour
 
     // ---- Settings menu
     private var serialNRMenuItems: [NSMenuItem] = []
+    private var twoBSIQController: TwoBSIQWindowController?
 
     // ---- conditions
     private let qsbCheck = NSButton(checkboxWithTitle: "QSB", target: nil, action: nil)
@@ -744,7 +745,7 @@ public final class MainWindowController: NSWindowController, NSTableViewDataSour
         // F6=97, F7=98, F8=100, F9=101, F10=109, F11=103
         let f1toF8: [UInt16] = [122, 120, 99, 118, 96, 97, 98, 100]
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
+            guard let self, self.twoBSIQController == nil else { return event }
             let chars = event.charactersIgnoringModifiers ?? ""
             let mods = event.modifierFlags
             let keyCode = event.keyCode
@@ -950,6 +951,7 @@ public final class MainWindowController: NSWindowController, NSTableViewDataSour
     }
 
     @objc private func runToggled() {
+        guard twoBSIQController == nil else { return }
         if running {
             sim.stop()
         } else {
@@ -1169,10 +1171,44 @@ public final class MainWindowController: NSWindowController, NSTableViewDataSour
         }
         serialItem.submenu = serialMenu
         settingsMenu.addItem(serialItem)
+        settingsMenu.addItem(.separator())
+        let twoBSIQItem = NSMenuItem(title: "2BSIQ (CQ WW CW)…",
+                                    action: #selector(openTwoBSIQ(_:)), keyEquivalent: "")
+        twoBSIQItem.target = self
+        settingsMenu.addItem(twoBSIQItem)
 
         // insert Settings before the Window menu (last item)
         mainMenu.insertItem(settingsItem, at: max(1, mainMenu.items.count - 1))
         updateSerialNRMenuEnabled()
+    }
+
+    @objc private func openTwoBSIQ(_ sender: NSMenuItem) {
+        if let twoBSIQController {
+            twoBSIQController.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        guard let window else { return }
+        guard !running else {
+            let alert = NSAlert()
+            alert.messageText = "Stop the current run before opening 2BSIQ."
+            alert.beginSheetModal(for: window)
+            return
+        }
+
+        let controller = TwoBSIQWindowController(
+            call: currentInputText(callField), wpm: Settings.wpm,
+            pitch: Settings.pitch, volume: sim.masterVolume
+        )
+        let ordinarySettings = sender.menu?.items.filter { $0 !== sender && !$0.isHidden } ?? []
+        controller.onClose = { [weak self] in
+            for item in ordinarySettings { item.isHidden = false }
+            self?.twoBSIQController = nil
+            self?.window?.makeKeyAndOrderFront(nil)
+        }
+        twoBSIQController = controller
+        for item in ordinarySettings { item.isHidden = true }
+        controller.showWindow(nil)
+        window.orderOut(nil)
     }
 
     private func updateMenuCheckmarks(_ menu: NSMenu?, selectedTag: Int) {

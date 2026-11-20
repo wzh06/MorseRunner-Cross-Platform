@@ -15,6 +15,7 @@
 ## 功能
 
 - **全部 12 个比赛**：CQ WPX、CQ WW、ARRL DX、ARRL Field Day、ARRL Sweepstakes、NCJ NAQP、CWOPS CWT、K1USN SST（Farnsworth）、JARL ALL JA、JARL ACAG、IARU HF、HST
+- macOS 独立 **2BSIQ（CQ WW CW）** 训练，支持双波段交错通联、分声道接收和逐字符发射显示。
 - 完整的模拟引擎：DX 台站生成/呼叫/通联状态机、LID/鬼影、QSB/QRM/QRN/Flutter、序列号生成（WPX 分布）、计分/校验/错误纠正
 - DSP 链路：CW 包络（Blackman-Harris 平滑）、滤波器、调制器、AGC、自监听（原版算法逐行移植）
 - 数据文件：`Resources/` 下的 DXCC.LIST、Master.dta、各比赛历史文件（与原版一致）
@@ -70,6 +71,24 @@ swift build
 > 再次按 CQ 即可。DX 台站音高在 ±300 Hz 内随机偏移是原版设计（模拟不同
 > 电台的调谐差异），听起来与自己的侧音略不同属正常现象。
 
+### macOS 2BSIQ（CQ WW CW）
+
+停止普通训练后，打开 **Settings → 2BSIQ (CQ WW CW)…**。确认本台呼号和 CQ 分区，再点击 **Start**。本台分区根据呼号自动查询，也可在 **CQ Zone** 下拉框选择 1–40 区。手动选择会按本台呼号保存。
+
+快捷键栏和分数栏下方并排显示 **VFO A（20 m）** 和 **VFO B（15 m）**。按 `\` 切换输入焦点，两边各自保留呼号和通联状态。
+
+| 按键 | 操作 |
+|------|------|
+| `Enter` | 按当前 VFO 的通联阶段发送 CQ、交换或 TU |
+| `F1` / `F2` / `F3` | 分别发送 CQ、交换、TU |
+| `Esc` | 取消正在发射及排队的报文。空闲时放弃当前 VFO 的通联 |
+
+1. 分别在两个 VFO 发 CQ，自行安排交错节奏。任一时刻只有一个 VFO 发射，另一侧可以排队一条有效的报文。
+2. 模拟电台使用 3–6 字符的呼号，每次只报一次。输入后，呼号框会预览 `对方呼号 ENN 本台CQ分区`，例如 `JA1ABC ENN 24`。发射时，每发完一个字符就从左侧移除它，发完清空。对方收到正确交换后仅回复一次信号报告和分区，每次发完后等待 20 秒。
+3. 收到对方交换后发送 `TU 本台呼号`。发完自动记账，并由同一波段的下一台应答。重复通联、CQ 分区和实体系数按波段统计。
+
+**Stereo Separation** 滑块会即时生效并保存。0% 时双耳播放相同混音，100% 时左耳对应 VFO A、右耳对应 VFO B。发射期间关闭本台侧音和发射侧接收，另一侧继续接收。关闭 2BSIQ 窗口即可返回普通模式。
+
 ### Terminal UI（跨平台）
 
 ```
@@ -88,7 +107,7 @@ w <wpm>  d <min>  a <n>  速度/时长/活动度
 
 ```
 Sources/
-  MorseRunnerCore/   引擎核心：DSP / Morse / Sim / Contest / Support
+  MorseRunnerCore/   引擎核心：DSP / Morse / Sim / Contest / Support / TwoBSIQ
                      —— 只依赖 Foundation，macOS/Linux/Windows 通用
   MorseRunnerMac/    macOS 原生应用：AppKit UI + AVAudioEngine 后端
   MorseRunnerTUI/    终端 UI（纯 Foundation，跨平台）
@@ -100,6 +119,8 @@ Sources/
 - `SilentAudioBackend` —— 无设备时仍按时钟推进模拟（默认，测试/CI）
 - `AVAudioBackend` —— macOS 的 AVAudioEngine 实现
 - Linux 可扩展 PortAudio 后端，接入 `AudioBackend` 即可
+
+2BSIQ 使用独立的双 VFO 会话和 macOS 立体声音频后端，复用 CW 波形生成和 CQ WW 呼号数据。
 
 ## 与原始 Delphi 项目的对应
 
