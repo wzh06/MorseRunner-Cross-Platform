@@ -124,12 +124,19 @@ final class TwoBSIQWindowTests: XCTestCase {
             views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Send exchange" }
         })
         XCTAssertNotNil(a.field.currentEditor())
-        for (character, code): (String, UInt16) in [("j", 38), ("a", 0), ("1", 18), ("a", 0), ("b", 11), ("c", 8)] {
+        for (character, code): (String, UInt16) in [("j", 38), ("a", 0), ("1", 18)] {
             try key(character, code, in: window)
         }
+        let checks = views.compactMap { $0 as? TwoBSIQCallCheckView }
+        XCTAssertEqual(checks.count, 2)
+        let suggested = try XCTUnwrap(descendants(checks[0]).compactMap { $0 as? NSButton }.first {
+            $0.title == "JA1ABC"
+        })
+        XCTAssertFalse(descendants(checks[1]).compactMap { $0 as? NSButton }.contains { $0.title == "JA1ABC" })
+        suggested.performClick(nil)
         XCTAssertEqual(a.call, "JA1ABC")
         XCTAssertTrue(visibleText(in: a).contains(" ENN 24"))
-        XCTAssertTrue(views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "CQ Zone 25" })
+        XCTAssertTrue(views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "RX 599 25" })
         try key("\r", 36, in: window)
         XCTAssertTrue(visibleText(in: a).contains("JA1ABC ENN 24"))
         XCTAssertNotNil(b.field.currentEditor())
@@ -143,12 +150,32 @@ final class TwoBSIQWindowTests: XCTestCase {
             views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Send TU" }
         })
         try key("\\", 42, in: window)
+        try key("", 98, in: window)
+        XCTAssertTrue(visibleText(in: a).contains("?"))
+        XCTAssertTrue(waitUntil { views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Listening for report" } })
+        XCTAssertTrue(waitUntil { views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Send TU" } })
         try key("\r", 36, in: window)
         XCTAssertTrue(visibleText(in: a).contains("TU BH5HIE"))
         XCTAssertNotNil(b.field.currentEditor())
         let log = try XCTUnwrap(views.compactMap { $0 as? NSTableView }.first)
         XCTAssertTrue(waitUntil { log.numberOfRows == 1 })
+        XCTAssertEqual(views.compactMap { $0 as? NSTextField }.filter { $0.stringValue == "Qso: 1" }.count, 2)
+        let clock = try XCTUnwrap(views.compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "Elapsed time" })
+        XCTAssertNotEqual(clock.stringValue, "00:00:00")
+        XCTAssertEqual(clock.convert(clock.bounds, to: nil).minX, aFrame.minX, accuracy: 3)
+        XCTAssertLessThan(clock.convert(clock.bounds, to: nil).maxY, aFrame.minY)
+        let scoreBox = try XCTUnwrap(views.compactMap { $0 as? TwoBSIQScoreView }.first)
+        XCTAssertGreaterThan(scoreBox.bounds.height, 75)
+        let results = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "Results…" })
         XCTAssertEqual(b.call, "X")
+        start.performClick(nil)
+        let stoppedAt = clock.stringValue
+        results.performClick(nil)
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        window.endSheet(sheet)
+        XCTAssertEqual(clock.stringValue, stoppedAt)
+        start.performClick(nil)
+        XCTAssertEqual(clock.stringValue, "00:00:00")
         let exit = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "Exit 2BSIQ" })
         exit.performClick(nil)
         XCTAssertFalse(window.isVisible)

@@ -8,7 +8,7 @@ public enum TwoBSIQBand: Int, CaseIterable, Sendable {
 }
 
 public enum TwoBSIQAction: Equatable {
-    case cq, exchange, finish
+    case cq, exchange, finish, repeatRequest
 }
 
 public enum TwoBSIQStage: Equatable {
@@ -22,6 +22,7 @@ public struct TwoBSIQLaneDisplay: Equatable {
     public let queued: Bool
     public let draftVersion: Int
     public let status: String?
+    public let receivedZone: Int?
 }
 
 public struct TwoBSIQQSO {
@@ -33,6 +34,8 @@ public struct TwoBSIQQSO {
 }
 
 public struct TwoBSIQScore: Equatable {
+    public init() {}
+
     public fileprivate(set) var qsos = 0
     public fileprivate(set) var points = 0
     public fileprivate(set) var multipliers = 0
@@ -111,6 +114,7 @@ public final class TwoBSIQSession {
 
     public private(set) var log: [TwoBSIQQSO] = []
     public private(set) var score = TwoBSIQScore()
+    public var elapsedSeconds: Int { playback / AudioConstants.defaultRate }
     public var separation: Float = 1
 
     public convenience init(call: String, zone: Int, wpm: Int, pitch: Int, catalog: TwoBSIQCatalog) {
@@ -155,8 +159,16 @@ public final class TwoBSIQSession {
         } else {
             text = pending?.text
         }
+        let copiedExchange = lane.stage == .receivingReport || lane.stage == .awaitingTU
         return TwoBSIQLaneDisplay(stage: lane.stage, transmission: text, queued: pending != nil,
-                                 draftVersion: lane.draftVersion, status: lane.status)
+                                 draftVersion: lane.draftVersion, status: lane.status,
+                                 receivedZone: copiedExchange ? lane.station?.zone : nil)
+    }
+
+    public func canSend(_ action: TwoBSIQAction, on band: TwoBSIQBand) -> Bool {
+        guard active?.command.band != band, queued == nil else { return false }
+        let suggested = suggestedAction(for: band)
+        return action == .repeatRequest ? (suggested == .exchange || suggested == .finish) : suggested == action
     }
 
     public func suggestedAction(for band: TwoBSIQBand) -> TwoBSIQAction? {
@@ -170,7 +182,7 @@ public final class TwoBSIQSession {
 
     @discardableResult
     public func send(_ action: TwoBSIQAction, on band: TwoBSIQBand, enteredCall: String) -> Bool {
-        guard active?.command.band != band, queued == nil, suggestedAction(for: band) == action else { return false }
+        guard canSend(action, on: band) else { return false }
         let index = band.rawValue
         let text: String
         let entered = TwoBSIQCatalog.normalizedCall(enteredCall)
@@ -185,6 +197,8 @@ public final class TwoBSIQSession {
             text = entered + Self.exchangeSuffix(zone: zone)
         case .finish:
             text = "TU \(call)"
+        case .repeatRequest:
+            text = "?"
         }
         let command = Command(band: band, action: action, text: text,
                               addressedStation: entered == lanes[index].station?.call)
@@ -275,6 +289,13 @@ public final class TwoBSIQSession {
             logContact(station, on: band)
             lanes[index].draftVersion += 1
             callNextStation(on: band)
+        case .repeatRequest:
+            guard let station = lanes[index].station else { return }
+            if lanes[index].stage == .awaitingTU {
+                receive("5NN \(station.zone)", on: band, stage: .receivingReport)
+            } else {
+                receive(station.call, on: band, stage: .receivingCall)
+            }
         }
     }
 

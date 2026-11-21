@@ -5,7 +5,7 @@ import Foundation
 
 /// Simple callsign list (port of `TCallList`).
 final class CallList {
-    private var calls: [String] = []
+    private(set) var calls: [String] = []
 
     init() {}
 

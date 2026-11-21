@@ -211,6 +211,48 @@ final class TwoBSIQTests: XCTestCase {
         XCTAssertEqual(session.display(for: .a).stage, .awaitingTU)
     }
 
+    func testCallCheckRanksPrefixBeforePartialAndNearbyCalls() async {
+        let catalog = TwoBSIQCatalog(history: "JA1ABC,25,\nJA1ABD,25,\n",
+                                     masterCalls: ["JA1AB", "JA1ABC", "KJA1AB", "JA1BA"])
+        XCTAssertTrue(catalog.matches(for: "JA").isEmpty)
+        XCTAssertEqual(catalog.matches(for: " ja1ab "), ["JA1AB", "JA1ABC", "JA1ABD", "KJA1AB", "JA1BA"])
+        XCTAssertEqual(catalog.matches(for: "JA1AB", limit: 2), ["JA1AB", "JA1ABC"])
+    }
+
+    func testRepeatRequestsAndAutomaticExchangeStayOnTheirBand() async {
+        let station = station("JA1ABC", zone: 25, entity: "Japan", continent: "AS")
+        let session = TwoBSIQSession(call: "BH5HIE", zone: 24, wpm: 60, pitch: 600, stations: [station])
+        let clock = Clock(session)
+        XCTAssertFalse(session.send(.repeatRequest, on: .a, enteredCall: ""))
+        XCTAssertTrue(session.send(.cq, on: .a, enteredCall: ""))
+        clock.until { session.suggestedAction(for: .a) == .exchange }
+        XCTAssertNil(session.display(for: .a).receivedZone)
+        let draft = session.display(for: .a).draftVersion
+        XCTAssertTrue(session.send(.repeatRequest, on: .a, enteredCall: "JA1A"))
+        XCTAssertEqual(session.display(for: .a).transmission, "?")
+        clock.until { session.display(for: .a).stage == .receivingCall }
+        clock.until { session.suggestedAction(for: .a) == .exchange }
+        XCTAssertEqual(session.display(for: .a).draftVersion, draft)
+
+        XCTAssertTrue(session.send(.exchange, on: .a, enteredCall: "JA1ABC"))
+        clock.until { session.display(for: .a).stage == .receivingReport }
+        XCTAssertEqual(session.display(for: .a).receivedZone, 25)
+        XCTAssertNil(session.display(for: .b).receivedZone)
+        clock.until { session.suggestedAction(for: .a) == .finish }
+        XCTAssertTrue(session.send(.cq, on: .b, enteredCall: ""))
+        XCTAssertTrue(session.send(.repeatRequest, on: .a, enteredCall: ""))
+        XCTAssertTrue(session.display(for: .a).queued)
+        clock.until { session.display(for: .a).stage == .receivingReport }
+        XCTAssertEqual(session.display(for: .a).receivedZone, 25)
+        clock.until { session.suggestedAction(for: .a) == .finish }
+        XCTAssertTrue(session.log.isEmpty)
+        XCTAssertTrue(session.send(.finish, on: .a, enteredCall: ""))
+        clock.until { session.log.count == 1 }
+        XCTAssertEqual(session.log.first?.zone, 25)
+        XCTAssertNil(session.display(for: .a).receivedZone)
+        XCTAssertEqual(session.elapsedSeconds, clock.played / rate)
+    }
+
     private func station(_ call: String, zone: Int, entity: String, continent: String) -> TwoBSIQCatalog.Station {
         .init(call: call, zone: zone, entity: entity, continent: continent)
     }

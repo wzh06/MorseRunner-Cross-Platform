@@ -24,25 +24,30 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
     private let separation = NSSlider(value: 1, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let separationValue = NSTextField(labelWithString: "")
     private let runButton = NSButton(title: "Start", target: nil, action: nil)
-    private let score = NSTextField(labelWithString: "")
+    private let score = TwoBSIQScoreView(frame: .zero)
+    private let clock = NSTextField(labelWithString: "00:00:00")
     private let notice = NSTextField(labelWithString: "")
     private let table = NSTableView()
     private let entries = [TwoBSIQEntryView(), TwoBSIQEntryView()]
     private let statuses = [NSTextField(labelWithString: ""), NSTextField(labelWithString: "")]
     private let callZones = [NSTextField(labelWithString: ""), NSTextField(labelWithString: "")]
+    private let checkViews = TwoBSIQBand.allCases.map { TwoBSIQCallCheckView(band: $0) }
+    private var previewZones: [Int?] = [nil, nil]
     private lazy var editor: CallInputFieldEditor = {
         let editor = CallInputFieldEditor()
         editor.isFieldEditor = true
         return editor
     }()
     private var buttons: [NSButton] = []
-    private let actions: [TwoBSIQAction] = [.cq, .exchange, .finish]
+    private let actions: [TwoBSIQAction] = [.cq, .exchange, .finish, .repeatRequest]
     private var keyMonitor: Any?
     private let audio = TwoBSIQAudio()
     private var session: TwoBSIQSession?
     private var selected = TwoBSIQBand.a
     private var draftVersions = [0, 0]
     private var log: [TwoBSIQQSO] = []
+    private var lastScore = TwoBSIQScore()
+    private var elapsed = 0
     private let pitch: Int
     private let volume: Float
     var onClose: (() -> Void)?
@@ -55,14 +60,15 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         self.pitch = pitch
         self.volume = volume
         ownCall = CallInputTextField(string: TwoBSIQCatalog.normalizedCall(call))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 490),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 610),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         super.init(window: window)
         window.title = "2BSIQ — CQ WW CW"
-        window.minSize = NSSize(width: 760, height: 390)
+        window.contentMinSize = NSSize(width: 760, height: 600)
         window.delegate = self
         window.contentView = buildContent()
+        score.show(lastScore)
         window.center()
         let savedWpm = (defaults.object(forKey: Self.wpmKey) as? NSNumber)?.intValue ?? wpm
         wpmStepper.integerValue = min(120, max(10, savedWpm))
@@ -144,7 +150,8 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         runButton.target = self
         runButton.action = #selector(toggleRun)
         let exit = NSButton(title: "Exit 2BSIQ", target: self, action: #selector(exitTraining))
-        let setup = row([label("My Call"), ownCall, label("CQ Zone"), zone, runButton, exit])
+        let results = NSButton(title: "Results…", target: self, action: #selector(showResults))
+        let setup = row([label("My Call"), ownCall, label("CQ Zone"), zone, runButton, results, exit])
 
         wpmField.delegate = self
         wpmField.target = self
@@ -171,15 +178,15 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         separationValue.widthAnchor.constraint(equalToConstant: 40).isActive = true
         let audioSettings = row([label("Stereo Separation"), separation, separationValue])
 
-        buttons = ["F1  CQ", "F2  Exchange", "F3  TU"].enumerated().map { index, title in
+        buttons = ["F1  CQ", "F2  Exchange", "F3  TU", "F7  ?"].enumerated().map { index, title in
             let button = NSButton(title: title, target: self, action: #selector(sendButton(_:)))
             button.tag = index
             return button
         }
         let shortcutHint = label("Enter Send & Switch   \\ Switch VFO   Esc Cancel")
         shortcutHint.textColor = .secondaryLabelColor
-        let shortcuts = row(buttons + [shortcutHint])
-        score.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        let shortcuts = column([row(buttons), shortcutHint])
+        let controls = row([shortcuts, spacer(), score])
 
         let bands = TwoBSIQBand.allCases.map { band in
             let index = band.rawValue
@@ -187,14 +194,17 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
             entry.field.setAccessibilityLabel("\(band.name) Callsign")
             entry.field.delegate = self
             entry.field.visibleTextChanged = { [weak self] _ in self?.updatePreview(for: band) }
+            let check = checkViews[index]
+            check.didChoose = { [weak self] call in self?.chooseCall(call, for: band) }
             let title = label("\(band.name) · \(band.meters) m")
             title.font = .boldSystemFont(ofSize: 13)
             statuses[index].textColor = .secondaryLabelColor
             callZones[index].textColor = .secondaryLabelColor
             let header = row([title, spacer(), callZones[index]])
-            let lane = column([header, entry, statuses[index]])
+            let lane = column([header, entry, statuses[index], check])
             header.widthAnchor.constraint(equalTo: lane.widthAnchor).isActive = true
             entry.widthAnchor.constraint(equalTo: lane.widthAnchor).isActive = true
+            check.widthAnchor.constraint(equalTo: lane.widthAnchor).isActive = true
             return lane
         }
         let inputs = row(bands)
@@ -219,8 +229,11 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         notice.textColor = .secondaryLabelColor
+        clock.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        clock.setAccessibilityLabel("Elapsed time")
+        let status = row([clock, notice, spacer()])
         let radioSettings = row([speeds, spacer(), audioSettings])
-        let content = column([setup, radioSettings, shortcuts, score, inputs, scroll, notice])
+        let content = column([setup, radioSettings, controls, inputs, scroll, status])
         content.spacing = 10
 
         let root = NSView()
@@ -232,6 +245,7 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
             content.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
             radioSettings.widthAnchor.constraint(equalTo: content.widthAnchor),
+            controls.widthAnchor.constraint(equalTo: content.widthAnchor),
             inputs.widthAnchor.constraint(equalTo: content.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: content.widthAnchor)
         ])
@@ -286,6 +300,16 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
 
     @objc private func exitTraining() {
         window?.performClose(nil)
+    }
+
+    @objc private func showResults() {
+        guard let window else { return }
+        let score = lastScore
+        let result = "\(score.qsos) QSO · \(score.points) pts × \(score.multipliers) mults = \(score.total)"
+        let alert = NSAlert()
+        alert.messageText = "Morse Runner — 2BSIQ Results"
+        alert.informativeText = "Elapsed: \(clock.stringValue)\n\nRaw: \(result)\nVerified: \(result)"
+        alert.beginSheetModal(for: window)
     }
 
     private func label(_ text: String) -> NSTextField {
@@ -361,13 +385,39 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         let draft = entries[index].call
         let suffix = operatorZone.map(TwoBSIQSession.exchangeSuffix) ?? ""
         entries[index].preview(suffix, draft: draft)
-        callZones[index].stringValue = catalog.zone(for: draft).map { "CQ Zone \($0)" } ?? ""
+        previewZones[index] = catalog.zone(for: draft)
+        updateExchangeDisplay(for: band, receivedZone: session?.display(for: band).receivedZone)
+        checkViews[index].show(catalog.matches(for: draft, limit: TwoBSIQCallCheckView.capacity))
+    }
+
+    private func chooseCall(_ call: String, for band: TwoBSIQBand) {
+        let entry = entries[band.rawValue]
+        guard session != nil, !entry.field.isHidden else { return }
+        window?.makeFirstResponder(entry)
+        entry.field.stringValue = call
+        select(band, focus: true)
+        updatePreview(for: band)
+        refresh()
+    }
+
+    private func updateExchangeDisplay(for band: TwoBSIQBand, receivedZone: Int?) {
+        let index = band.rawValue
+        let zone = receivedZone ?? previewZones[index]
+        setString(callZones[index], zone.map { "RX 599 \($0)" } ?? "")
+    }
+
+    private func updateClock(_ seconds: Int) {
+        if seconds != elapsed {
+            elapsed = seconds
+            clock.stringValue = String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+        }
     }
 
     @objc private func toggleRun() {
-        if session != nil {
+        if let session {
+            updateClock(session.elapsedSeconds)
             audio.stop()
-            session = nil
+            self.session = nil
             notice.stringValue = ""
             for band in TwoBSIQBand.allCases {
                 let entry = entries[band.rawValue]
@@ -398,6 +448,7 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
             newSession.setSpeed(wpm: wpm, slowerBy: minRxSpeed.selectedTag(), fasterBy: maxRxSpeed.selectedTag())
             newSession.separation = separation.floatValue
             session = newSession
+            updateClock(0)
             draftVersions = [0, 0]
             log = []
             table.reloadData()
@@ -475,6 +526,7 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
         case 122: action = .cq
         case 120: action = .exchange
         case 99: action = .finish
+        case 98: action = .repeatRequest
         case 36, 76:
             guard focusedBand != nil else { return event }
             if !event.isARepeat {
@@ -516,17 +568,17 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
                 updatePreview(for: band)
             }
             if entry.field.isEnabled != running { entry.field.isEnabled = running }
+            checkViews[index].allowsSelection = running && !entry.field.isHidden
             entry.selected = running && band == selected
             if wasHidden && !entry.field.isHidden && window?.firstResponder === entry {
                 entry.focus()
             }
             setString(statuses[index], laneStatus(state))
+            updateExchangeDisplay(for: band, receivedZone: state?.receivedZone)
         }
 
-        let state = session?.display(for: selected)
-        let action = state?.transmission == nil ? session?.suggestedAction(for: selected) : nil
         for (index, button) in buttons.enumerated() {
-            let enabled = actions[index] == action
+            let enabled = session?.canSend(actions[index], on: selected) ?? false
             if button.isEnabled != enabled { button.isEnabled = enabled }
         }
         if let session, session.log.count != log.count {
@@ -534,11 +586,12 @@ final class TwoBSIQWindowController: NSWindowController, NSWindowDelegate, NSTex
             table.reloadData()
             table.scrollRowToVisible(log.count - 1)
         }
-        let result = session?.score
-        if let result {
-            setString(score, "\(result.qsos) QSO     \(result.points) Pts     \(result.multipliers) Mult     Score \(result.total)")
-        } else if log.isEmpty {
-            setString(score, "0 QSO     0 Pts     0 Mult     Score 0")
+        if let session {
+            updateClock(session.elapsedSeconds)
+            if session.score != lastScore {
+                lastScore = session.score
+                score.show(lastScore)
+            }
         }
     }
 
